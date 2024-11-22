@@ -1,39 +1,79 @@
 import os
 
+import sqlite3
 import bcrypt
 from cryptography.fernet import Fernet
 
 
+def initialize_db():
+    conn = sqlite3.connect("passwords.db")
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+    CREATE TABLE IF NOT EXISTS passwords 
+    (
+    id INTEGER PRIMARY KEY,
+    service TEXT NOT NULL,
+    username TEXT NOT NULL,
+    password TEXT NOT NULL
+    )
+    """
+    )
+    cursor.execute(
+        """
+    CREATE TABLE IF NOT EXISTS settings 
+    (
+    master_password TEXT,
+    key_string TEXT
+    )
+    """
+    )
+
+    conn.commit()
+    conn.close()
+
+
 def create_master_password():
-    master_password = get_input("Set a master password:\n>")
+    master_password = str(get_input("Set a master password:\n>"))
     hashed = bcrypt.hashpw(master_password.encode(), bcrypt.gensalt())
 
-    with open("master_password.txt", "wb") as file:
-        file.write(hashed)
-
+    conn = sqlite3.connect("passwords.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO settings (master_password) VALUES (?)", (hashed,))
+    conn.commit()
+    conn.close()
     print("\nSuccessfully created a master password!")
 
 
 def verify_master_password():
-    if not os.path.exists("master_password.txt"):
+    conn = sqlite3.connect("passwords.db")
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT master_password FROM settings")
+    result = cursor.fetchone()
+
+    if not result:
         create_master_password()
     else:
-        with open("master_password.txt", "rb") as file:
-            stored_hash = file.read()
-        master_password = input("Enter your master password:\n>")
-        if not bcrypt.checkpw(master_password.encode(), stored_hash):
+        master_password = str(input("Enter your master password:\n>"))
+        if not bcrypt.checkpw(master_password.encode(), result[0]):
             print("Incorrect master password!")
             exit(1)
 
 
 def load_key():
-    if not os.path.exists("key.key"):
+    conn = sqlite3.connect("passwords.db")
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT key_string FROM settings")
+    result = cursor.fetchone()
+    if result[0] is None:
         key = Fernet.generate_key()
-        with open("key.key", "wb") as key_file:
-            key_file.write(key)
+        cursor.execute("UPDATE settings set key_string = ?", (key,))
+        conn.commit()
+        conn.close()
     else:
-        with open("key.key", "rb") as key_file:
-            key = key_file.read()
+        key = result[0]
 
     return key
 
@@ -46,30 +86,42 @@ def get_input(prompt=""):
     return user_input
 
 
-def add(fer):
+def save_password(cipher):
     name = get_input("\nEnter the service name:\n>")
     usn = get_input("\nEnter the username:\n>")
     pwd = get_input("\nEnter the password:\n>")
+    encrypted_pwd = cipher.encrypt(pwd.encode()).decode()
 
-    with open("passwords.txt", "a") as f:
-        f.write(f"{name} | {usn} | {fer.encrypt(pwd.encode()).decode()}\n")
-        print(f"\nPassword saved for {name}.")
+    conn = sqlite3.connect("passwords.db")
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO passwords (service, username, password) VALUES (?, ?, ?)",
+        (name, usn, encrypted_pwd),
+    )
+    conn.commit()
+    conn.close()
+    print("\nSuccessfully saved password!")
+    get_input("\nPress ENTER to continue...\n>")
 
 
-def view(fer):
-    if not os.path.exists("passwords.txt"):
+def retrieve_passwords(cipher):
+    conn = sqlite3.connect("passwords.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT service, username, password FROM passwords")
+    rows = cursor.fetchall()
+    conn.close()
+    if not rows:
         print("\nNo saved passwords.")
     else:
-        with open("passwords.txt", "r") as f:
-            for line in f.readlines():
-                name, usn, pwd = line.strip().split(" | ")
-                print(
-                    f"\nService: {name}\nUsername: {usn}\nPassword: {fer.decrypt(pwd.encode()).decode()}"
-                )
-            get_input("\nPress ENTER to continue...\n>")
+        print("\nSAVED PASSWORDS")
+        for service, username, password in rows:
+            password = cipher.decrypt(password.encode()).decode()
+            print(f"\nService: {service}\nUsername: {username}\nPassword: {password}")
+        get_input("\nPress ENTER to continue...\n>")
 
 
 def main():
+    initialize_db()
     print("\nPress Q anywhere to quit.\n")
     verify_master_password()
     key = load_key()
@@ -79,10 +131,11 @@ def main():
         mode = get_input("\n1. add a new password \n2. view existing ones\n>")
 
         if mode == "1":
-            add(cipher)
+            save_password(cipher)
 
         elif mode == "2":
-            view(cipher)
+
+            retrieve_passwords(cipher)
 
         else:
             print("Invalid input.")
